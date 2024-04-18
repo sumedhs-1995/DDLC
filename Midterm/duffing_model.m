@@ -1,0 +1,273 @@
+clc; clear all; close all;
+%% Simulate and Visualize system dynamics
+seed = 1;
+T = 1;
+t0 = 0;
+dt = 0.01;
+x0 = [0.1,0.1];
+tspan = t0:dt:T;
+data_type = 'train';
+a = 1;
+f = 1;
+[t,x] = ode45(@(t,x)dynamics_duffing(t,x, a, f, data_type), tspan, x0);
+[~,u]= dynamics_duffing(t,x, a, f, data_type);
+x1 = x(:,1);
+x2 = x(:,2);
+
+figure;
+plot(x1, x2,'LineWidth',2,'Color','blue')
+xlabel('$x_1$','FontSize',16,'Interpreter','latex');
+ylabel('$x_2$','FontSize',16,'Interpreter','latex');
+title('Duffing Oscillator','FontSize',16)
+%% Generate Dataset for Training
+clc; clear all; close all;
+training_data = generate_data('train');
+% training_data = load('training_data.mat').training_data;
+%% Set basis
+basis_type = 'monomial';
+ if strcmp(basis_type,'monomial')
+     deg = 2;
+     % basis = @(x) monomial_basis(x,deg);
+     % basis = @(x) [ones(size(x)),x.^2, (x(:,1)).*(x(:,2)), x.^3]';
+     basis = @(x) [x.^2,x.^3]';
+     % basis = @(x) [x.^2, (x(:,1)).*(x(:,2)), x.^3, (x(:,1).^2).*(x(:,2)), (x(:,1)).*(x(:,2).^2), x.^4, (x(:,1).^3).*(x(:,2)), (x(:,1)).*(x(:,2).^3), (x(:,1).^2).*(x(:,2).^2)]';
+ else
+     data = training_data(:,1:2);
+     RBF_params.N_centers = 100;
+     RBF_params.gamma_ = 100;
+     RBF_params.sampling_type = 'random';
+     RBF_params.function_type = 'gaussian';
+     RBF_params.scale = 100;
+     RBF_params.show_plot = 'false';
+     centers = get_centers(data,RBF_params);
+     basis =@(x) RBF_basis(x, centers, RBF_params);
+ end
+ %% Basis Functions
+ 
+x = sym('x',[1,2]);
+x1 = x(:,1);
+x2 = x(:,2);
+basis(x)
+ %% EDMD
+X1 = training_data(:,1:2);
+X2 = training_data(:,3:4);
+U = training_data(:,5);
+append_original = 0;
+EDMD = get_EDMD(X1, X2, U, basis);
+
+% Plot eigen values on unit-circle
+eig_koopman = eig(EDMD.A);
+
+r = 1;
+theta = 0:0.01:2*pi;
+x_unit = r*cos(theta);
+y_unit = r*sin(theta);
+
+figure;
+plot(x_unit, y_unit, 'Color','blue','LineWidth',1.5)
+hold on
+
+plot(real(eig_koopman), imag(eig_koopman),'o',Color='red')
+xlabel('Real');
+ylabel("Imaginary")
+xlim([-1.2 1.2])
+ylim([-1.2, 1.2])
+hold off
+title('Koopman Eigen Values')
+%% Validation
+% test_data = generate_data('test');
+% test_data = load('test_data.mat').test_data;
+n_val = 1;
+% Generate trajectory with control for prediction
+data_type = 'test';
+a = 1;
+T = 10;
+t0 = 0;
+dt = 0.01;
+x0 = [-1+2*rand(1,1);-1+2*rand(1,1)];
+tspan = t0:dt:T;
+f=1;
+control_enabled = 'true';
+[t,x] = ode45(@(t,x)dynamics_duffing(t,x, a, f, data_type), tspan, x0);
+[~,u]= dynamics_duffing(t,x, a, f,data_type);
+X1 = x(1:10:end-1,:);
+X2 = x(11:10:end,:);
+U = u(1:10:end-1,:);
+test_data = [X1,X2,U];
+
+[X_pred, X_actual] = Koopman_predict(test_data,n_val, EDMD, basis);
+Koopman_validate(X_pred,X_actual,n_val, control_enabled)
+
+% Generate trajectory without control for prediction
+data_type = 'test';
+a = 0;
+T = 10;
+t0 = 0;
+dt = 0.01;
+x0 = [-1+2*rand(1,1);-1+2*rand(1,1)];
+tspan = t0:dt:T;
+f=1;
+control_enabled = 'false';
+[t,x] = ode45(@(t,x)dynamics_duffing(t,x, a, f, data_type), tspan, x0);
+[~,u]= dynamics_duffing(t,x, a, f, data_type);
+X1 = x(1:10:end-1,:);
+X2 = x(11:10:end,:);
+U = u(1:10:end-1,:);
+test_data = [X1,X2,U];
+
+[X_pred, X_actual] = Koopman_predict(test_data,n_val, EDMD, basis);
+Koopman_validate(X_pred,X_actual,n_val, control_enabled)
+%% Feedback Control with Koopman Operator
+controllability = rank(ctrb(EDMD.A,EDMD.B));
+
+controller.A = EDMD.A;
+controller.B = EDMD.B;
+controller.C = EDMD.C;
+controller.simulation_time = 1000;
+controller.type ='State_Feedback';
+controller.Koopman = 'true';
+controller.basis = basis;
+controller.x0 = [-0.25, -0.25];
+controller.Q = eye(length(controller.A));
+controller.R = 0.1;
+[t_lqr_koopman, x_lqr_koopman] = control(controller);
+
+x_log = x_lqr_koopman;
+t_log = t_lqr_koopman;
+subplot(2,1,1)
+plot(t_log, x_log(:,1), "Color",'blue', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_1$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+
+subplot(2,1,2)
+plot(t_log(1:200,:), x_log(1:200,2), "Color",'blue', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_2$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+
+sgtitle('Koopman Operator Based State Feedback Control')
+
+%% MPC controller design
+controller.A = EDMD.A;
+controller.B = EDMD.B;
+controller.C = EDMD.C;
+controller.simulation_time = 1000;
+controller.type ='Model_Predictive_Control';
+controller.Koopman = 'true';
+controller.basis = basis;
+controller.x0 = [-0.25, -0.25];
+controller.Q = eye(length(controller.A));
+controller.R = 0.1;
+[t_mpc_koopman, x_mpc_koopman] = control(controller);
+
+x_log = x_mpc_koopman;
+t_log = t_mpc_koopman;
+
+
+subplot(2,1,1)
+plot(t_log, X_log(:,1), "Color",'red', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_1$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+legend('LQR','MPC');
+sgtitle('Koopman Operator Based Control')
+subplot(2,1,2)
+plot(t_log(1:200,:), X_log(1:200,2), "Color",'red', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_2$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+legend('LQR','MPC');
+
+sgtitle('Koopman Operator Based Control')
+%% Linearized State Feedback Control
+controller.A = [0, -1.1; -1.1, -1.05];
+controller.B = [0;0.1];
+controller.C = [1, 0; 0, 1];
+controller.simulation_time = 1000;
+controller.type ='State_Feedback';
+controller.Koopman = 'false';
+controller.basis = basis;
+controller.x0 = [-0.25, -0.25];
+controller.Q = eye(length(controller.A));
+controller.R = 0.1;
+[t_lqr_, x_lqr_] = control(controller);
+
+x_log = x_lqr_;
+t_log = t_lqr_;
+figure;
+subplot(2,1,1)
+plot(t_log(1:100,:), x_log(1:100,1), "Color",'blue', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_1$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+
+subplot(2,1,2)
+plot(t_log(1:100,:), x_log(1:100,2), "Color",'blue', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_2$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+
+x_log = x_lqr_koopman;
+t_log = t_lqr_koopman;
+
+subplot(2,1,1)
+plot(t_log(1:100,1), x_log(1:100,1), "Color",'black', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_1$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+legend('Linearized','Koopman')
+subplot(2,1,2)
+plot(t_log(1:100,:), x_log(1:100,2), "Color",'black', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_2$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+
+legend('Linearized','Koopman')
+sgtitle('State Feedback Control')
+%% Linearized MPC Control
+controller.A = [0, -1.1; -1.1, -1.05];
+controller.B = [0;0.1];
+controller.C = [1, 0; 0, 1];
+controller.simulation_time = 1000;
+controller.type ='Model_Predictive_Control';
+controller.Koopman = 'false';
+controller.basis = basis;
+controller.x0 = [-0.25, -0.25];
+controller.Q = eye(length(controller.A));
+controller.R = 0.1;
+[t_mpc_, x_mpc_] = control(controller);
+
+x_log = x_mpc_;
+t_log = t_mpc_;
+figure;
+subplot(2,1,1)
+plot(t_log, x_log(:,1), "Color",'blue', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_1$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+
+subplot(2,1,2)
+plot(t_log(1:200,:), x_log(1:200,2), "Color",'blue', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_2$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+legend('Linearized','Koopman')
+x_log = x_mpc_koopman;
+t_log = t_mpc_koopman;
+
+subplot(2,1,1)
+plot(t_log, x_log(:,1), "Color",'black', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_1$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+legend('LQR','MPC');
+sgtitle('Koopman Operator Based Control')
+subplot(2,1,2)
+plot(t_log(1:200,:), x_log(1:200,2), "Color",'black', 'LineWidth',2)
+xlabel('t','FontSize',12,'FontWeight','bold','Interpreter','latex');
+ylabel('$x_2$','FontSize',12,'FontWeight','bold','Interpreter','latex');
+hold on
+legend('Linearized','Koopman')
+
+sgtitle('MPC Control Control')

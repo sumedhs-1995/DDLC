@@ -1,0 +1,125 @@
+function [t, x] = control(controller)
+
+A = controller.A;
+B = controller.B;
+C = controller.C;
+
+x0 = controller.x0;
+Ts = controller.simulation_time;
+
+
+
+if strcmp(controller.type,'State_Feedback')
+    [X,K,L,info] = idare(A,B,Q,R,[],[]);
+    if strcmp(controller.Koopman,'true')
+        % Simulate Feedback Controller
+        z0 = [x0';basis(x0)];
+        x_log = x0;
+        t_log = 0;
+        for t = 0:Ts
+            z1 = A*z0 - B*K*z0;
+            x_log = [x_log; (C*z1)'];
+            t_log = [t_log; 0.1*t];
+            z0 =z1;
+        end
+    else
+        for t = 0:Ts
+            x1 = A*x0' - B*K*x0';
+            x_log = [x_log; x1'];
+            t_log = [t_log; 0.1*t];
+            x0 =x1;
+        end
+    end
+elseif strcmp(controller.type,'Model_Predictive_Control')
+    system.A = A;
+    system.B = B;
+    system.C = C;
+    system.n = size(A,2); % state dimension (or lifted state dim for koopman)
+    system.p = size(B,2); % control dimension
+    system.m = size(C,2); % output dimension
+
+    % MPC Parameters
+    mpc.dT = 0.1; % Discretization and simulation timestep
+    mpc.N = 10; % prediction horizon
+
+    % define MPC cost
+    % stage cost (running cost): x'*Q*X + u'*R*u 
+    % terminal cost: x'*P'x
+    
+    % (replace with cost for lifted states if using EDMD)
+    % For this, use x = Cz and to obtain the cost
+    
+    mpc.Q = eye(size(A));
+    mpc.R = eye(1,1);
+    mpc.P = eye(size(A));
+
+    
+
+    if strcmp(controller.Koopman,'true')
+        % input bounds
+        % bounds.u_min = -2; 
+        % bounds.u_max = 2;
+        bounds.u_min = []; 
+        bounds.u_max = [];
+        
+        % output bounds
+        % bounds.y_min = [[-2;-2];basis([-2,-2])];
+        % bounds.y_max = [[2;2];basis([2,2])];
+        bounds.y_min = [];
+        bounds.y_max = [];
+
+        [F, G, A_ineq, B_ineq] = get_QP(system,mpc,bounds);
+
+        % initialize
+        x0 = [-0.25; -0.25];
+        z0 = [x0;basis(x0')];
+        % x0 = [1;1;1];  
+        t = 0;
+        
+        % unpack info
+        p = system.p;
+        dT = mpc.dT;
+        
+        % data logging
+        x_log = x0;
+        t_log = 0;
+        
+        % simulation loop
+        max_iter = 1000;
+        z = z0;
+        for i = 1:max_iter
+        
+            % get MPC controller
+            U = do_MPC(G,z'*F',A_ineq,B_ineq,z);
+            u = U(1:p);
+            
+            % simulate discrete time system
+            % (replace with underlying nonlinear system and ode45 for Koopman MPC)
+            z = A_d*z + B_d*u;
+        
+            % log data
+            T_log = [T_log, t];
+            Z_log = [Z_log, z];
+            x = C_d*z;
+            x_log = [x_log; x'];
+            U_log = [U_log, u]; 
+        
+            
+            % update sim time
+            t = i*dT;
+            t_log = [t_log;t];
+        end
+        
+    else
+
+    end
+
+    
+    
+
+else
+    error('Invalid Controller Type')
+end
+        
+
+end
